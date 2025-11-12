@@ -1,0 +1,97 @@
+---
+- name: Deploy Aqua Topia Frontend container (Fully Automated - Podman + Systemd)
+  hosts: web
+  become: true
+  vars:
+    project_dir: /home/ec2-user/aquatopia-frontend
+    image_name: aquatopia-frontend
+    service_name: aquatopia-frontend.service
+
+  tasks:
+    - name: Ensure project directory exists
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: '0755'
+
+    - name: Create Containerfile for frontend
+      copy:
+        dest: "{{ project_dir }}/Containerfile"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+        content: |
+          FROM registry.fedoraproject.org/fedora:40
+          RUN dnf install -y nginx && dnf clean all
+          RUN mkdir -p /run/nginx /var/log/nginx
+          COPY index.html /usr/share/nginx/html/index.html
+          CMD ["nginx", "-g", "daemon off;"]
+
+    - name: Create index.html
+      copy:
+        dest: "{{ project_dir }}/index.html"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head><title>Aqua Topia Frontend</title></head>
+          <body>
+          <h1>Hello from Aqua Topia Frontend!</h1>
+          <p>Served automatically by Podman + Systemd on RHEL 10.</p>
+          </body>
+          </html>
+
+    - name: Check if image already exists
+      become_user: ec2-user
+      command: podman images -q localhost/{{ image_name }}
+      register: image_check
+      ignore_errors: true
+
+    - name: Build container image if missing
+      become_user: ec2-user
+      command: podman build -t {{ image_name }} .
+      args:
+        chdir: "{{ project_dir }}"
+      when: image_check.stdout == ""
+
+    - name: Create systemd service for Podman container
+      copy:
+        dest: "/etc/systemd/system/{{ service_name }}"
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Aqua Topia Frontend (Podman)
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          User=ec2-user
+          ExecStart=/usr/bin/podman run --rm --name={{ image_name }} -p 8080:80 localhost/{{ image_name }}
+          ExecStop=/usr/bin/podman stop -t 10 {{ image_name }}
+          Restart=always
+          TimeoutStopSec=30
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd
+      command: systemctl daemon-reload
+
+    - name: Enable and start frontend service
+      systemd:
+        name: "{{ service_name }}"
+        enabled: true
+        state: started
+
+    - name: Verify container is running
+      become_user: ec2-user
+      command: podman ps
+      register: ps_output
+
+    - name: Display running containers
+      debug:
+        msg: "{{ ps_output.stdout }}"
