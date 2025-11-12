@@ -1,0 +1,70 @@
+- name: Setup web15 node for Aqua Topia (RHEL 10)
+  hosts: web
+  become: yes
+  tasks:
+    - name: Enable required RHEL repositories
+      ansible.builtin.command:
+        cmd: >
+          subscription-manager repos
+          --enable codeready-builder-for-rhel-10-x86_64-rpms
+          --enable rhel-10-for-x86_64-appstream-rpms
+      register: enable_repos
+      changed_when: "'enabled' in enable_repos.stdout or 'Enabled' in enable_repos.stdout"
+      ignore_errors: true
+
+    - name: Import RHEL base GPG key
+      ansible.builtin.command:
+        cmd: rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
+      ignore_errors: true
+
+    - name: Import EPEL official GPG key
+      ansible.builtin.command:
+        cmd: rpm --import https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-10
+      ignore_errors: true
+
+    - name: Install EPEL 10 repository
+      ansible.builtin.dnf:
+        name: "https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm"
+        state: present
+        disable_gpg_check: false
+
+    - name: Install base packages
+      ansible.builtin.dnf:
+        name:
+          - podman
+          - firewalld
+          - certbot
+          - python3-certbot-nginx
+          - nginx
+        state: present
+
+    - name: Enable and start firewalld
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Open HTTP and HTTPS ports
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - http
+        - https
+
+    - name: Ensure SELinux is enforcing
+      ansible.builtin.command:
+        cmd: setenforce 1
+      ignore_errors: true
+
+    - name: Verify Certbot installation
+      ansible.builtin.command:
+        cmd: certbot --version
+      register: certbot_version
+      changed_when: false
+
+    - name: Display Certbot version
+      ansible.builtin.debug:
+        msg: "Certbot installed successfully: {{ certbot_version.stdout }}"
