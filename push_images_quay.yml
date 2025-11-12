@@ -1,0 +1,53 @@
+---
+- name: Push Aqua Topia container images to quay.io (frontend + backend)
+  hosts: web
+  become: true
+  vars:
+    quay_user: "r0915543"
+    images:
+      - { name: "aquatopia-frontend", local_tag: "localhost/aquatopia-frontend:latest" }
+      - { name: "aquatopia-backend",  local_tag: "localhost/aquatopia-backend:latest" }
+
+  tasks:
+    - name: Ensure Podman is installed
+      ansible.builtin.dnf:
+        name: podman
+        state: present
+
+    - name: Check existing Podman login for quay.io
+      become_user: ec2-user
+      command: podman login --get-login quay.io
+      register: quay_login
+      ignore_errors: true
+
+    - name: Prompt for quay.io password or token (if not logged in)
+      ansible.builtin.pause:
+        prompt: |
+          Enter your quay.io password or access token for user {{ quay_user }}:
+      register: quay_password
+      when: quay_login.rc != 0
+
+    - name: Perform quay.io login
+      become_user: ec2-user
+      command: >
+        podman login quay.io
+        -u {{ quay_user }}
+        -p {{ quay_password.user_input | quote }}
+      when: quay_login.rc != 0
+
+    - name: Tag each image for quay.io
+      become_user: ec2-user
+      loop: "{{ images }}"
+      command: >
+        podman tag {{ item.local_tag }} quay.io/{{ quay_user }}/{{ item.name }}:latest
+
+    - name: Push all images to quay.io
+      become_user: ec2-user
+      loop: "{{ images }}"
+      command: >
+        podman push quay.io/{{ quay_user }}/{{ item.name }}:latest
+      register: push_output
+
+    - name: Display push results
+      ansible.builtin.debug:
+        msg: "{{ push_output.results | map(attribute='stdout_lines') | list }}"
