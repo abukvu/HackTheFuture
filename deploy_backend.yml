@@ -1,0 +1,95 @@
+---
+- name: Deploy Aqua Topia Backend container (Rootless Podman + Systemd)
+  hosts: web
+  become: true
+  vars:
+    project_dir: /home/ec2-user/aquatopia-backend
+    image_name: aquatopia-backend
+    container_port: 9000
+    host_port: 9000
+
+  tasks:
+    - name: Ensure project directory exists
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: '0755'
+
+    - name: Create Containerfile for backend
+      copy:
+        dest: "{{ project_dir }}/Containerfile"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+        content: |
+          FROM registry.fedoraproject.org/fedora:40
+          RUN dnf install -y python3 && dnf clean all
+          WORKDIR /app
+          COPY app.py /app/app.py
+          EXPOSE {{ container_port }}
+          CMD ["python3", "/app/app.py"]
+
+    - name: Create simple Python backend app
+      copy:
+        dest: "{{ project_dir }}/app.py"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+        content: |
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-type', 'application/json')
+                  self.end_headers()
+                  self.wfile.write(b'{"service":"AquaTopia Backend","status":"ok"}')
+          HTTPServer(('', {{ container_port }}), Handler).serve_forever()
+
+    - name: Build backend image (rootless)
+      become_user: ec2-user
+      command: podman build -t {{ image_name }} .
+      args:
+        chdir: "{{ project_dir }}"
+
+    - name: Enable lingering for ec2-user (to allow user services)
+      command: loginctl enable-linger ec2-user
+
+    - name: Create or refresh container (rootless)
+      become_user: ec2-user
+      command: >
+        podman create --replace --name {{ image_name }}
+        -p {{ host_port }}:{{ container_port }}
+        localhost/{{ image_name }}
+
+    - name: Ensure systemd user directory exists
+      become_user: ec2-user
+      file:
+        path: /home/ec2-user/.config/systemd/user
+        state: directory
+        mode: '0755'
+
+    - name: Generate systemd unit for backend container
+      become_user: ec2-user
+      command: >
+        podman generate systemd --name {{ image_name }} --files --user
+      args:
+        chdir: /home/ec2-user/.config/systemd/user
+
+    - name: Enable and start backend service (user scope)
+      become_user: ec2-user
+      systemd:
+        name: "container-{{ image_name }}.service"
+        state: started
+        enabled: true
+        scope: user
+
+    - name: Verify backend container is running
+      become_user: ec2-user
+      command: podman ps
+      register: ps_output
+
+    - name: Show running containers
+      debug:
+        msg: "{{ ps_output.stdout }}"
